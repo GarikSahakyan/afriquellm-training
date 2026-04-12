@@ -1,0 +1,70 @@
+# AfriqueLLM Continued Pre-Training Config
+# Based on Appendix B.2 of the AfriqueLLM paper.
+#
+# To switch models, change model_name_or_path:
+#   - "meta-llama/Llama-3.1-8B"        (AfriqueLlama)
+#   - "google/gemma-3-4b-pt"            (AfriqueGemma-4B)
+#   - "google/gemma-3-12b-pt"           (AfriqueGemma-12B)
+#   - "Qwen/Qwen3-8B"                   (AfriqueQwen-8B)
+#   - "Qwen/Qwen3-14B"                  (AfriqueQwen-14B)
+#
+# To adjust dataset, change the `dataset` field to match the names
+# registered in your dataset_info.json (output of prepare_data.py).
+
+### model
+model_name_or_path: google/gemma-3-4b-pt
+
+### method
+stage: pt                          # continued pre-training
+finetuning_type: full              # full parameter training (not LoRA)
+
+### data
+dataset_dir: data/lf               # directory containing dataset_info.json
+dataset: fineweb2                  # comma-separated list of dataset names from dataset_info.json
+                                   # e.g. "fineweb2_fra_Latn,fineweb2_swh_Latn" for per-language
+template: empty                    # no chat template for CPT
+packing: true                      # sequence packing — critical for throughput with variable-length docs
+cutoff_len: 16384                  # 16k context window (best on AfriMGSM per Table 10)
+overwrite_cache: false
+preprocessing_num_workers: 32
+dataloader_num_workers: 32
+
+### output
+output_dir: checkpoints/afriquellm
+logging_steps: 10
+save_steps: 1000
+plot_loss: true
+overwrite_output_dir: true
+save_only_model: false
+report_to: wandb                   # set to "none" if you don't use wandb
+
+### training
+do_train: true
+num_train_epochs: 1.0
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 8    # paper targets global batch size of 4M tokens
+                                   # formula: grad_accum = (4M / 16384) / (num_gpus * batch_size)
+                                   # e.g. 8 GPUs: (244) / (8 * 4) ≈ 8  ✓
+                                   # adjust this to maintain 4M token global batch size
+learning_rate: 5.0e-5             # best from Table 9 sweep (1e-6 to 2e-4)
+lr_scheduler_type: cosine_with_min_lr
+lr_scheduler_kwargs:
+  min_lr_rate: 0.01               # min lr = 5e-5 * 0.01 = 5e-7
+warmup_ratio: 0.001
+weight_decay: 0.1
+adam_beta1: 0.9
+adam_beta2: 0.95
+bf16: true
+ddp_timeout: 180000000
+
+### efficiency
+deepspeed: ds_zero1.json          # ZeRO-1 for smaller models; switch to ds_zero2.json for 12B+
+enable_liger_kernel: true         # Liger kernel for faster ops
+flash_attn: fa3                   # Flash Attention 3 — requires H100 or A100
+
+### misc
+data_shared_file_system: true     # set to false if each node has its own copy of data
+freeze_vision_tower: true
+freeze_multi_modal_projector: true
+freeze_language_model: false
+resume_from_checkpoint: null
