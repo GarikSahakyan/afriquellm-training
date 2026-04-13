@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
 """
-Download WURA language-by-language for the AfriqueLLM reproduction project.
+Download WURA language-by-language.
 
-WURA is organized with one config per language.
-This script loads each language separately and normalizes rows to:
+WURA schema (from HuggingFace dataset card, consistent across all language configs):
+    id, headline, content, category, url
 
-{
-    "text": "...",
-    "language": "...",
-    "source": "wura",
-    "doc_id": "...",
-    "url": "...",
-    "metadata": {...}
-}
+We keep: text (from content), doc_id (from id), url, language.
+We prepend the headline to the content so it's not lost.
 
 Usage:
     python download_wura.py --out_dir data/raw/wura --max_rows_per_lang 1000
+    python download_wura.py --out_dir data/raw/wura
 """
 
 from __future__ import annotations
@@ -23,19 +18,17 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 from datasets import load_dataset
 
 
-# Current WURA loader configs observed from the dataset loader
 TARGET_LANGUAGES = {
-    # High-resource languages currently available
+    # High-resource replay languages
     "eng": "English",
     "fra": "French",
     "por": "Portuguese",
-
-    # African languages available in WURA
+    # African languages
     "afr": "Afrikaans",
     "amh": "Amharic",
     "arz": "Egyptian Arabic",
@@ -63,66 +56,23 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out_dir", required=True)
     p.add_argument("--cache_dir", default=None)
     p.add_argument("--max_rows_per_lang", type=int, default=None)
-    p.add_argument("--num_proc", type=int, default=1)
     return p.parse_args()
 
 
-def ensure_dir(path: str | Path) -> None:
-    Path(path).mkdir(parents=True, exist_ok=True)
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
 
 
-def guess_column_name(columns: Iterable[str], candidates: Iterable[str]) -> Optional[str]:
-    cols = set(columns)
-    for c in candidates:
-        if c in cols:
-            return c
-    return None
-
-
-def detect_schema(columns: Iterable[str]) -> dict:
-    text_col = guess_column_name(columns, ["content", "text", "document"])
-    headline_col = guess_column_name(columns, ["headline", "title"])
-    id_col = guess_column_name(columns, ["id", "doc_id"])
-    url_col = guess_column_name(columns, ["url"])
-    category_col = guess_column_name(columns, ["category"])
-
-    if text_col is None:
-        raise ValueError(f"Could not find text column. Columns: {list(columns)}")
-
+def normalize(example: dict, lang_code: str) -> dict:
+    # Prepend headline to content so it's included in the text.
+    # WURA articles always have both fields, headline is never empty.
+    text = f"{example['headline']}\n\n{example['content']}"
     return {
-        "text": text_col,
-        "headline": headline_col,
-        "id": id_col,
-        "url": url_col,
-        "category": category_col,
-    }
-
-
-def normalize_example(example: dict, schema: dict, lang_code: str) -> dict:
-    metadata = {}
-    if schema["headline"] and example.get(schema["headline"]) is not None:
-        metadata["headline"] = example.get(schema["headline"])
-    if schema["category"] and example.get(schema["category"]) is not None:
-        metadata["category"] = example.get(schema["category"])
-
-    return {
-        "text": example.get(schema["text"]),
+        "text": text,
+        "doc_id": example["id"],
+        "url": example["url"],
         "language": lang_code,
-        "source": "wura",
-        "doc_id": example.get(schema["id"]) if schema["id"] else None,
-        "url": example.get(schema["url"]) if schema["url"] else None,
-        "metadata": metadata if metadata else None,
     }
-
-
-def save_metadata(out_dir: Path, dataset_name: str) -> None:
-    metadata = {
-        "dataset": dataset_name,
-        "description": "WURA subset for AfriqueLLM reproduction",
-        "languages": TARGET_LANGUAGES,
-    }
-    with open(out_dir / "metadata.json", "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=2, ensure_ascii=False)
 
 
 def process_language(
@@ -132,10 +82,9 @@ def process_language(
     split: str,
     out_dir: Path,
     cache_dir: Optional[str],
-    max_rows_per_lang: Optional[int],
-    num_proc: int,
+    max_rows: Optional[int],
 ) -> None:
-    print(f"\nLoading {lang_code} ({lang_name})")
+    print(f"[wura] {lang_code} ({lang_name})")
 
     ds = load_dataset(
         dataset_name,
@@ -145,45 +94,29 @@ def process_language(
         verification_mode="no_checks",
     )
 
-    print("Columns:", ds.column_names)
-    schema = detect_schema(ds.column_names)
-    print(f"Detected schema for {lang_code}: {schema}")
-
-    # IMPORTANT: select first, then map
-    if max_rows_per_lang is not None:
-        n = min(len(ds), max_rows_per_lang)
-        ds = ds.select(range(n))
-
-    ds = ds.map(
-        lambda ex: normalize_example(ex, schema, lang_code),
-        remove_columns=ds.column_names,
-        num_proc=num_proc,
-    )
+    if max_rows is not None:
+        ds = ds.select(range(min(len(ds), max_rows)))
 
     lang_dir = out_dir / lang_code
     ensure_dir(lang_dir)
-    out_file = lang_dir / "data.jsonl"
 
-    with open(out_file, "w", encoding="utf-8") as f:
-        for row in ds:
+    with open(lang_dir / "data.jsonl", "w", encoding="utf-8") as f:
+        for example in ds:
+            row = normalize(example, lang_code)
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    stats = {
-        "language_code": lang_code,
-        "language_name": lang_name,
-        "num_rows": len(ds),
-    }
-    with open(lang_dir / "stats.json", "w", encoding="utf-8") as f:
-        json.dump(stats, f, indent=2, ensure_ascii=False)
-
-    print(f"Saved {len(ds)} rows for {lang_code}")
+    stats = {"language_code": lang_code, "language_name": lang_name, "num_rows": len(ds)}
+    (lang_dir / "stats.json").write_text(json.dumps(stats, indent=2, ensure_ascii=False))
+    print(f"  → {len(ds)} rows saved to {lang_dir / 'data.jsonl'}")
 
 
 def main() -> None:
     args = parse_args()
     out_dir = Path(args.out_dir)
     ensure_dir(out_dir)
-    save_metadata(out_dir, args.dataset_name)
+
+    metadata = {"dataset": args.dataset_name, "languages": TARGET_LANGUAGES}
+    (out_dir / "metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False))
 
     for lang_code, lang_name in TARGET_LANGUAGES.items():
         try:
@@ -194,11 +127,10 @@ def main() -> None:
                 split=args.split,
                 out_dir=out_dir,
                 cache_dir=args.cache_dir,
-                max_rows_per_lang=args.max_rows_per_lang,
-                num_proc=args.num_proc,
+                max_rows=args.max_rows_per_lang,
             )
         except Exception as e:
-            print(f"ERROR for {lang_code} ({lang_name}): {e}")
+            print(f"ERROR {lang_code} ({lang_name}): {e}")
 
     print("\nDone.")
 
