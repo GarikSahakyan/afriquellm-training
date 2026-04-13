@@ -39,13 +39,11 @@ echo "  Computed grad_accumulation_steps: $GRAD_ACCUM (for 4M token global batch
 PATCHED_CONFIG=$(mktemp /tmp/train_cpt_XXXX.yaml)
 sed "s/^gradient_accumulation_steps:.*/gradient_accumulation_steps: $GRAD_ACCUM/" "$CONFIG" > "$PATCHED_CONFIG"
 
-torchrun \
-    --nnodes="$NNODES" \
-    --nproc_per_node="$NUM_GPUS" \
-    --node_rank="$NODE_RANK" \
-    --master_addr="$MASTER_ADDR" \
-    --master_port="$MASTER_PORT" \
-    -m llamafactory.train \
-    "$PATCHED_CONFIG"
+FORCE_TORCHRUN=1 \
+NNODES="$NNODES" \
+NODE_RANK="$NODE_RANK" \
+MASTER_ADDR="$MASTER_ADDR" \
+MASTER_PORT="$MASTER_PORT" \
+llamafactory-cli train "$PATCHED_CONFIG"
 
 rm -f "$PATCHED_CONFIG"
