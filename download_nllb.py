@@ -246,7 +246,7 @@ def main() -> None:
         return
 
     print("Loading SSA-COMET model...")
-    model_path = download_model("Unbabel/ssa-comet-qe")
+    model_path = download_model("McGill-NLP/ssa-comet-qe")
     model = load_from_checkpoint(model_path)
 
     ensure_dir(filtered_dir)
